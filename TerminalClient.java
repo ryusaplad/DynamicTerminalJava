@@ -80,18 +80,19 @@ public class TerminalClient {
         writer = null;
         reader = null;
 
-        if (!isAutomatic && !isRunningInCommandPrompt()) {
-            showError("Manual mode must be run in a command prompt environment and cannot be started with 'start'.");
-            System.exit(1);
+        // For automatic mode
+        if (isAutomatic) {
+            if (!isSilent) {
+                createAndShowStatusMessage();
+            } else {
+                System.out.println("Terminal client is running in silent mode...");
+            }
         }
 
-        if (isAutomatic && isRunningInCommandPrompt()) {
-            showError("automatic mode cannot be run in a command prompt environment.");
+        // For manual mode
+        if (!isAutomatic && !isRunningInCommandPrompt()) {
+            showError("Manual mode must be run in command prompt environment.");
             System.exit(1);
-        }
-        
-        if (isAutomatic && !isSilent) {
-            createAndShowStatusMessage();
         }
 
         while (true) {
@@ -152,7 +153,7 @@ public class TerminalClient {
                                 if (!isSilent) {
                                     updateStatusLabel("Sending Commands....");
                                 }
-                                Thread.sleep(1000); // Delay after each command
+                                Thread.sleep(1500); // Delay after each command
                             }
                         }
                     }
