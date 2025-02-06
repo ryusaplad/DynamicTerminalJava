@@ -6,13 +6,10 @@ import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.io.PrintWriter;
 
 import java.net.Socket;
-import java.net.UnknownHostException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,20 +26,175 @@ import javax.swing.JProgressBar;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 
+import java.util.Date;
+import java.util.Map;
+import java.util.HashMap;
 
+/**
+ * Represents the connection state of a host
+ */
+enum ConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    FAILED
+}
+
+/**
+ * Represents the execution mode of the terminal client
+ */
+enum ExecutionMode {
+    MANUAL,
+    AUTOMATIC
+}
+
+/**
+ * Configuration for a remote host connection
+ */
+class HostConfig {
+    private static final int RETRY_COOLDOWN_MS = 5000;
+
+    final String hostname;
+    final int port;
+    final String clientName;
+    final String autoCommand;
+    ConnectionState state;
+    long lastAttempt;
+    int retryCount;
+
+    public HostConfig(String hostname, int port, String clientName, String autoCommand) {
+        this.hostname = hostname;
+        this.port = port;
+        this.clientName = clientName;
+        this.autoCommand = autoCommand;
+        this.state = ConnectionState.DISCONNECTED;
+        this.lastAttempt = 0;
+        this.retryCount = 0;
+    }
+
+    public boolean canRetry() {
+        return System.currentTimeMillis() - lastAttempt >= RETRY_COOLDOWN_MS;
+    }
+
+    @Override
+    public String toString() {
+        return String.format("Host[%s:%d, client=%s]", hostname, port, clientName);
+    }
+}
+
+/**
+ * Manages network connections to remote hosts
+ */
+class ConnectionManager {
+    private static final int TIMEOUT_MS = 30000;
+    private static LogCallback logCallback;
+    private Socket socket;
+    private PrintWriter writer;
+    private BufferedReader reader;
+    private HostConfig config;
+
+    public static void setLogCallback(LogCallback callback) {
+        logCallback = callback;
+    }
+
+    interface LogCallback {
+        void log(String message);
+    }
+
+    public ConnectionManager(HostConfig config) {
+        this.config = config;
+    }
+
+    public boolean connect() throws IOException {
+        try {
+            socket = new Socket(config.hostname, config.port);
+            socket.setSoTimeout(TIMEOUT_MS);
+            socket.setKeepAlive(true);
+            writer = new PrintWriter(socket.getOutputStream(), true);
+            reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            config.state = ConnectionState.CONNECTED;
+            return true;
+        } catch (IOException e) {
+            config.state = ConnectionState.FAILED;
+            close(); // Ensure cleanup on connection failure
+            throw e;
+        }
+    }
+
+    public void sendCommand(String command) throws IOException {
+        if (!config.state.equals(ConnectionState.CONNECTED) || socket == null || socket.isClosed()) {
+            throw new IOException("Not connected to host: " + config.hostname);
+        }
+        try {
+            writer.println(command);
+            if (writer.checkError()) { // Check for write errors
+                throw new IOException("Write error occurred");
+            }
+        } catch (Exception e) {
+            close(); // Cleanup on error
+            throw new IOException("Failed to send command: " + e.getMessage());
+        }
+    }
+
+    public String readResponse() throws IOException {
+        if (!config.state.equals(ConnectionState.CONNECTED) || reader == null) {
+            throw new IOException("Not connected to host: " + config.hostname);
+        }
+        try {
+            String response = reader.readLine();
+            if (response == null) {
+                throw new IOException("Connection closed by server");
+            }
+            return response;
+        } catch (IOException e) {
+            close(); // Cleanup on error
+            throw e;
+        }
+    }
+
+    public void close() {
+        try {
+            if (writer != null) {
+                writer.close();
+            }
+            if (reader != null) {
+                reader.close();
+            }
+            if (socket != null) {
+                socket.close();
+            }
+        } catch (IOException e) {
+            // Log close errors but don't throw
+            if (logCallback != null) {
+                logCallback.log("Error closing connection: " + e.getMessage());
+            }
+        } finally {
+            config.state = ConnectionState.DISCONNECTED;
+            reader = null;
+            writer = null;
+            socket = null;
+        }
+    }
+}
+
+/**
+ * Terminal client application for managing remote host connections
+ */
 public class TerminalClient {
-    private static BufferedReader consoleReader;
-    private static Socket socket;
-    private static PrintWriter writer;
-    private static BufferedReader reader;
+    private static final int MAX_RETRIES = 3;
     private static final String CONFIG_FILE = "client_config.properties";
+    private static final String LOCK_FILE = "terminal_client.lock";
+    private static final int LOG_MAX_LINES = 100;
+
+    private static BufferedReader consoleReader;
     private static Properties config = new Properties();
     private static boolean isSilent;
-    private static boolean isAutomatic;
+    private static ExecutionMode executionMode;
     private static JDialog statusDialog;
     private static JLabel statusLabel;
-    private static final String LOCK_FILE = "terminal_client.lock";
     private static File lockFile;
+    private static List<HostConfig> hostConfigs = new ArrayList<HostConfig>();
+    private static Map<String, ConnectionManager> connections = new HashMap<String, ConnectionManager>();
 
     private static boolean isAlreadyRunning() {
         try {
@@ -53,6 +205,12 @@ public class TerminalClient {
     }
 
     public static void main(String[] args) {
+        ConnectionManager.setLogCallback(new ConnectionManager.LogCallback() {
+            public void log(String message) {
+                logError(message);
+            }
+        });
+
         lockFile = new File(LOCK_FILE);
         if (isAlreadyRunning()) {
             if (isRunningInCommandPrompt()) {
@@ -73,15 +231,12 @@ public class TerminalClient {
 
         loadConfig();
         isSilent = Boolean.parseBoolean(getConfigString("silentMode", ""));
-        isAutomatic = Boolean.parseBoolean(getConfigString("isAutomatic", ""));
+        executionMode = ExecutionMode.valueOf(getConfigString("executionMode", "MANUAL"));
 
         consoleReader = new BufferedReader(new InputStreamReader(System.in));
-        socket = null;
-        writer = null;
-        reader = null;
 
         // For automatic mode
-        if (isAutomatic) {
+        if (executionMode.equals(ExecutionMode.AUTOMATIC)) {
             if (!isSilent) {
                 createAndShowStatusMessage();
             } else {
@@ -90,178 +245,158 @@ public class TerminalClient {
         }
 
         // For manual mode
-        if (!isAutomatic && !isRunningInCommandPrompt()) {
+        if (executionMode.equals(ExecutionMode.MANUAL) && !isRunningInCommandPrompt()) {
             showError("Manual mode must be run in command prompt environment.");
             System.exit(1);
         }
 
-        while (true) {
+        if (executionMode.equals(ExecutionMode.AUTOMATIC)) {
+            if (!isSilent) {
+                createAndShowStatusMessage();
+            }
+
+            while (true) {
+                connectToHosts();
+
+                // Check if all hosts are connected in automatic mode
+                boolean allConnected = true;
+                for (HostConfig config : hostConfigs) {
+                    if (!config.state.equals(ConnectionState.CONNECTED)) {
+                        allConnected = false;
+                        break;
+                    }
+                }
+
+                if (allConnected) {
+                    // Close all connections
+                    for (ConnectionManager connection : connections.values()) {
+                        connection.close();
+                    }
+                    connections.clear();
+                    break;
+                }
+
+                try {
+                    Thread.sleep(5000); // Wait before retrying
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            if (!isSilent) {
+                disposeStatusMessage();
+            }
+            System.exit(0);
+        } else {
+            // Manual mode
+            System.out.println("Available hosts:");
+            for (int i = 0; i < hostConfigs.size(); i++) {
+                System.out.println((i + 1) + ". " + hostConfigs.get(i));
+            }
+
             try {
-                String hostname = getConfigString("serverIP", "");
-                if (hostname.isEmpty()) {
-                    System.out.print("Enter server IP: ");
-                    hostname = consoleReader.readLine();
-                    config.setProperty("serverIP", hostname);
-                    saveConfig();
-                }
+                System.out.print("Select host number (or 'all' for all hosts): ");
+                String selection = consoleReader.readLine();
+                List<HostConfig> selectedHosts = new ArrayList<HostConfig>();
 
-                int port = getConfigInt("port", -1);
-                if (port < 0 || port > 65535) {
-                    System.out.print("Enter port: ");
-                    port = Integer.parseInt(consoleReader.readLine());
-                    if (port < 0 || port > 65535) {
-                        throw new IllegalArgumentException("Port number must be between 0 and 65535.");
-                    }
-                    config.setProperty("port", String.valueOf(port));
-                    saveConfig();
-                }
-
-                String clientName = getConfigString("clientName", "");
-                if (clientName.isEmpty()) {
-                    System.out.print("Enter your name: ");
-                    clientName = consoleReader.readLine();
-                    config.setProperty("clientName", clientName);
-                    saveConfig();
-                }
-
-                if (isAutomatic && !isSilent) {
-                    updateStatusLabel("Connecting to server...");
-                }
-
-                socket = new Socket(hostname, port);
-                System.out.println("Connected successfully to " + hostname + " on port " + port);
-
-                OutputStream output = socket.getOutputStream();
-                writer = new PrintWriter(output, true);
-                InputStream input = socket.getInputStream();
-                reader = new BufferedReader(new InputStreamReader(input));
-
-                writer.println(clientName); // Send client name to the server
-                writer.flush();
-                Thread.sleep(1000); // Delay after sending client name
-
-                // Execute the auto commands if specified
-                if (isAutomatic) {
-                    String autoCommands = getConfigString("autoCommand", "");
-                    if (!autoCommands.isEmpty()) {
-                        String[] commands = autoCommands.split(";");
-                        for (int i = 0; i < commands.length; i++) {
-                            String command = commands[i].trim();
-                            if (!command.isEmpty()) {
-                                writer.println(command);
-                                writer.flush();
-                                if (!isSilent) {
-                                    updateStatusLabel("Sending Commands....");
-                                }
-                                Thread.sleep(1500); // Delay after each command
-                            }
-                        }
-                    }
-                    closeResources();
-                    if (!isSilent) {
-                        disposeStatusMessage();
-                    }
-                    System.exit(0);
+                if ("all".equalsIgnoreCase(selection)) {
+                    selectedHosts.addAll(hostConfigs);
                 } else {
-                    // Thread to handle incoming messages from the server
-                    Thread serverListener = new Thread(new Runnable() {
+                    try {
+                        int index = Integer.parseInt(selection) - 1;
+                        if (index >= 0 && index < hostConfigs.size()) {
+                            selectedHosts.add(hostConfigs.get(index));
+                        } else {
+                            showError("Invalid host number");
+                            System.exit(1);
+                        }
+                    } catch (NumberFormatException e) {
+                        showError("Invalid input. Please enter a number or 'all'");
+                        System.exit(1);
+                    }
+                }
+
+                // Connect to selected hosts
+                for (HostConfig hostConfig : selectedHosts) {
+                    try {
+                        logInfo("Attempting to connect to " + hostConfig);
+                        ConnectionManager connection = new ConnectionManager(hostConfig);
+                        connection.connect();
+                        connections.put(hostConfig.hostname, connection);
+                        connection.sendCommand(hostConfig.clientName);
+                        System.out.println("Connected to " + hostConfig.hostname);
+                        Thread.sleep(1000);
+                    } catch (Exception e) {
+                        String errorMsg = "Failed to connect to " + hostConfig + ": " + e.getMessage();
+                        logError(errorMsg);
+                        System.err.println(errorMsg);
+                    }
+                }
+
+                if (connections.isEmpty()) {
+                    showError("No connections established");
+                    System.exit(1);
+                }
+
+                // Create response handlers for each connection
+                for (final Map.Entry<String, ConnectionManager> entry : connections.entrySet()) {
+                    Thread responseHandler = new Thread(new Runnable() {
                         public void run() {
                             try {
                                 String response;
-                                while ((response = reader.readLine()) != null) {
-                                    System.out.println("Server response: " + response);
+                                while ((response = entry.getValue().readResponse()) != null) {
+                                    System.out.println("[" + entry.getKey() + "] " + response);
                                     if ("Goodbye!".equalsIgnoreCase(response.trim())) {
                                         break;
                                     }
                                 }
                             } catch (IOException e) {
-                                showError("Connection lost: " + e.getMessage());
-                            } finally {
-                                closeResources();
-                                System.exit(0);
+                                logError("Connection lost to " + entry.getKey() + ": " + e.getMessage());
                             }
                         }
                     });
-                    serverListener.start();
-
-                    // Main thread to handle user input
-                    String command;
-                    while (true) {
-                        System.out.print(">>> ");
-                        command = consoleReader.readLine();
-                        if ("exit".equalsIgnoreCase(command.trim())) {
-                            writer.println("exit");
-                            writer.flush();
-                            break;
-                        }
-                        writer.println(command);
-                        writer.flush();
-                        Thread.sleep(1000); // Delay after each user command
-                    }
+                    responseHandler.start();
                 }
 
-                break; // Exit the loop if connection is successful
+                // Main command loop
+                String command;
+                while (true) {
+                    System.out.print(">>> ");
+                    command = consoleReader.readLine();
 
-            } catch (UnknownHostException ex) {
-                if (isAutomatic) {
-                    if (!isSilent) {
-                        updateStatusLabel("Server not found. Retrying in 5 seconds...");
-                    }
-                    logError("Server not found: " + ex.getMessage() + ". Retrying...");
-                    try {
-                        Thread.sleep(5000);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    }
-                } else {
-                    showError("Server not found: " + ex.getMessage());
-                    break;
-                }
-            } catch (IOException ex) {
-                if (isAutomatic) {
-                    if (ex.getMessage().contains("refused")) {
-                        if (!isSilent) {
-                            updateStatusLabel("Connection refused. Retrying in 5 seconds...");
+                    if ("exit".equalsIgnoreCase(command.trim())) {
+                        for (ConnectionManager connection : connections.values()) {
+                            try {
+                                connection.sendCommand("exit");
+                            } catch (IOException e) {
+                                // Ignore send errors during exit
+                            }
                         }
-                        logError("Connection refused: " + ex.getMessage() + ". Retrying...");
-                    } else {
-                        if (!isSilent) {
-                            updateStatusLabel("I/O error. Retrying in 5 seconds...");
-                        }
-                        logError("I/O error: " + ex.getMessage() + ". Retrying...");
+                        break;
                     }
-                    try {
-                        Thread.sleep(5000);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    }
-                } else {
-                    if (ex.getMessage().contains("refused")) {
-                        showError("I/O error: " + ex.getMessage()
-                                + "\n Please check the config and ensure the server is running and the port is correct.");
-                    } else {
-                        showError("I/O error: " + ex.getMessage());
-                    }
-                    break;
-                }
-            } catch (IllegalArgumentException ex) {
-                showError("Invalid input: " + ex.getMessage());
-                break;
-            } catch (InterruptedException ex) {
-                showError("Thread interrupted: " + ex.getMessage());
-                break;
-            }
 
-            if (!isAutomatic) {
-                break; // Exit the loop if not in automatic mode
+                    // Send command to all connected hosts
+                    for (Map.Entry<String, ConnectionManager> entry : connections.entrySet()) {
+                        try {
+                            entry.getValue().sendCommand(command);
+                        } catch (IOException e) {
+                            System.err.println("Failed to send command to " + entry.getKey() + ": " + e.getMessage());
+                        }
+                    }
+                    Thread.sleep(1000);
+                }
+
+            } catch (Exception e) {
+                showError("Error in manual mode: " + e.getMessage());
+            } finally {
+                // Close all connections
+                for (ConnectionManager connection : connections.values()) {
+                    connection.close();
+                }
+                connections.clear();
             }
         }
-
-        closeResources();
-        if (isAutomatic && !isSilent) {
-            disposeStatusMessage();
-        }
-        System.exit(0);
     }
 
     private static boolean isRunningInCommandPrompt() {
@@ -317,31 +452,6 @@ public class TerminalClient {
         }
     }
 
-    private static void closeResources() {
-        try {
-            if (reader != null) {
-                reader.close();
-                reader = null;
-            }
-        } catch (IOException ex) {
-            showError("Error closing reader: " + ex.getMessage());
-        }
-
-        if (writer != null) {
-            writer.close();
-            writer = null;
-        }
-
-        try {
-            if (socket != null && !socket.isClosed()) {
-                socket.close();
-                socket = null;
-            }
-        } catch (IOException ex) {
-            showError("Error closing socket: " + ex.getMessage());
-        }
-    }
-
     private static void loadConfig() {
         File configFile = new File(CONFIG_FILE);
         if (!configFile.exists()) {
@@ -351,6 +461,52 @@ public class TerminalClient {
         try {
             in = new FileInputStream(configFile);
             config.load(in);
+
+            // Check if this is an old format config
+            if (!config.containsKey("hostCount")) {
+                String oldIp = config.getProperty("serverIP", "");
+                String oldPort = config.getProperty("port", "");
+                String oldClientName = config.getProperty("clientName", "");
+                String oldAutoCommand = config.getProperty("autoCommand", "");
+
+                if (!oldIp.isEmpty() && !oldPort.isEmpty()) {
+                    // Set up new format
+                    config.setProperty("hostCount", "1");
+                    config.setProperty("host.1.ip", oldIp);
+                    config.setProperty("host.1.port", oldPort);
+                    config.setProperty("host.1.clientName", oldClientName);
+                    config.setProperty("host.1.autoCommand", oldAutoCommand);
+
+                    // Remove old properties
+                    config.remove("serverIP");
+                    config.remove("port");
+                    config.remove("clientName");
+                    config.remove("autoCommand");
+
+                    // Save the new format
+                    saveConfig();
+                }
+            }
+
+            // Load host configurations
+            hostConfigs.clear();
+            int hostCount = getConfigInt("hostCount", 1);
+            for (int i = 1; i <= hostCount; i++) {
+                String hostname = getConfigString("host." + i + ".ip", "");
+                int port = getConfigInt("host." + i + ".port", -1);
+                String clientName = getConfigString("host." + i + ".clientName", "");
+                String autoCommand = getConfigString("host." + i + ".autoCommand", "");
+
+                if (!hostname.isEmpty() && port > 0) {
+                    hostConfigs.add(new HostConfig(hostname, port, clientName, autoCommand));
+                }
+            }
+
+            if (hostConfigs.isEmpty()) {
+                createDefaultConfig();
+                loadConfig(); // Reload with default config
+            }
+
         } catch (IOException e) {
             showError("Error loading config file: " + e.getMessage());
         } finally {
@@ -365,14 +521,31 @@ public class TerminalClient {
     }
 
     private static void createDefaultConfig() {
-        config.setProperty("serverIP", "192.168.0.66");
-        config.setProperty("port", "8887");
-        config.setProperty("clientName", "ryu");
-        config.setProperty("autoCommand",
-                "ps aux | grep '[j]ava' | grep -v 'TerminalServer.jar' | awk '{print $2}' | xargs -r kill; /home/user1/PsJPOS_TouchScreen/bin/linux/PsJPOS.sh; exit");
+        // Clear existing properties
+        config.clear();
+
+        config.setProperty("hostCount", "2");
+
+        // First host
+        config.setProperty("host.1.ip", "192.168.0.103");
+        config.setProperty("host.1.port", "8887");
+        config.setProperty("host.1.clientName", "Ryu 103");
+        config.setProperty("host.1.autoCommand", "ps aux | grep '[j]ava' | grep -v 'TerminalServer.jar' | awk '{print $2}' | xargs -r kill; /home/user1/PsJPOS_TouchScreen/bin/linux/PsJPOS.sh; exit");
+
+        // Second host
+        config.setProperty("host.2.ip", "192.168.0.105");
+        config.setProperty("host.2.port", "8887");
+        config.setProperty("host.2.clientName", "Ryu 105");
+        config.setProperty("host.2.autoCommand", "ps aux | grep '[j]ava' | grep -v 'TerminalServer.jar' | awk '{print $2}' | xargs -r kill; /home/user1/PsJPOS_TouchScreen_Ryu/bin/linux/PsJPOS.sh; exit");
+
+        // Global settings
         config.setProperty("silentMode", "false");
-        config.setProperty("isAutomatic", "true");
+        config.setProperty("executionMode", "AUTOMATIC");
+
         saveConfig();
+
+        // Log the creation of default config
+        logInfo("Created default configuration with " + config.getProperty("hostCount") + " hosts");
     }
 
     private static void saveConfig() {
@@ -442,8 +615,8 @@ public class TerminalClient {
             }
             reader.close();
 
-            if (lines.size() > 100) {
-                lines = lines.subList(lines.size() - 100, lines.size());
+            if (lines.size() > LOG_MAX_LINES) {
+                lines = lines.subList(lines.size() - LOG_MAX_LINES, lines.size());
                 BufferedWriter writer = new BufferedWriter(new FileWriter(logFile));
                 for (String l : lines) {
                     writer.write(l);
@@ -453,6 +626,108 @@ public class TerminalClient {
             }
         } catch (IOException e) {
             System.err.println("Error managing log file size: " + e.getMessage());
+        }
+    }
+
+    private static void connectToHosts() {
+        boolean anyHostAvailable = false;
+
+        for (HostConfig hostConfig : hostConfigs) {
+            // Skip if max retries reached
+            if (hostConfig.retryCount >= MAX_RETRIES) {
+                logInfo("Skipping " + hostConfig + " - maximum retries reached");
+                continue;
+            }
+
+            try {
+                if (!hostConfig.canRetry()) {
+                    continue; // Skip if last attempt was less than 5 seconds ago
+                }
+
+                hostConfig.lastAttempt = System.currentTimeMillis();
+                hostConfig.retryCount++; // Increment retry counter
+                logInfo("Attempting to connect to " + hostConfig + " (Attempt " + hostConfig.retryCount + " of " + MAX_RETRIES + ")");
+
+                ConnectionManager connection = new ConnectionManager(hostConfig);
+                connection.connect();
+                connections.put(hostConfig.hostname, connection);
+
+                // Send client name
+                connection.sendCommand(hostConfig.clientName);
+                Thread.sleep(1000);
+
+                if (executionMode.equals(ExecutionMode.AUTOMATIC)) {
+                    // Execute auto commands
+                    if (!hostConfig.autoCommand.isEmpty()) {
+                        String[] commands = hostConfig.autoCommand.split(";");
+                        for (String command : commands) {
+                            command = command.trim();
+                            if (!command.isEmpty()) {
+                                connection.sendCommand(command);
+                                if (!isSilent) {
+                                    updateStatusLabel("Sending command to " + hostConfig.hostname + ": " + command);
+                                }
+                                Thread.sleep(1500);
+                            }
+                        }
+                    }
+                }
+
+                logInfo("Successfully connected to " + hostConfig);
+                hostConfig.state = ConnectionState.CONNECTED;
+                hostConfig.retryCount = 0; // Reset retry counter on successful connection
+                anyHostAvailable = true;
+
+            } catch (Exception e) {
+                String errorMsg = "Failed to connect to " + hostConfig + ": " + e.getMessage();
+                logError(errorMsg);
+                if (!isSilent) {
+                    updateStatusLabel(errorMsg);
+                }
+
+                // Close connection if it exists
+                ConnectionManager connection = connections.remove(hostConfig.hostname);
+                if (connection != null) {
+                    connection.close();
+                }
+                hostConfig.state = ConnectionState.FAILED;
+            }
+        }
+
+        // If no hosts are available and all have reached max retries, exit
+        if (!anyHostAvailable && allHostsMaxedRetries()) {
+            logInfo("All hosts have reached maximum retry attempts. Exiting...");
+            if (!isSilent) {
+                disposeStatusMessage();
+            }
+            System.exit(1);
+        }
+    }
+
+    private static boolean allHostsMaxedRetries() {
+        for (HostConfig hostConfig : hostConfigs) {
+            if (hostConfig.retryCount < MAX_RETRIES) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void logInfo(String message) {
+        try {
+            File logDir = new File("logs");
+            if (!logDir.exists()) {
+                logDir.mkdirs();
+            }
+            File logFile = new File(logDir, "terminal_client.log");
+            BufferedWriter writer = new BufferedWriter(new FileWriter(logFile, true));
+            writer.write("[INFO] " + new Date() + " - " + message);
+            writer.newLine();
+            writer.close();
+
+            manageLogFileSize(logFile);
+        } catch (IOException ioException) {
+            System.err.println("Logging error: " + ioException.getMessage());
         }
     }
 }

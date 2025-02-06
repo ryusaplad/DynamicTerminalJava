@@ -42,7 +42,7 @@ Here are some of the features of the TerminalClient and TerminalServer:
 
 ## How to get it?
 
-You can get the TerminalClient and TerminalServer from the releases page.
+You can get the TerminalClient and TerminalServer from cloning the repository.
 
 ## How to build it?
 

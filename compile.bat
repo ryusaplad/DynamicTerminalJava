@@ -1,76 +1,46 @@
 @echo off
 setlocal
 
-rem Set Java source file paths
-set CLIENT_SRC=TerminalClient.java
-set SERVER_SRC=TerminalServer.java
+set JAVA_VERSION=1.8
+set BUILD_DIR=build
+set DIST_DIR=dist
+set LOGS_DIR=logs
 
-rem Set output JAR file names
-set CLIENT_JAR=TerminalClient.jar
-set SERVER_JAR=TerminalServer.jar
-
-rem Set manifest file names
-set CLIENT_MANIFEST=client_manifest.mf
-set SERVER_MANIFEST=server_manifest.mf
-
-rem Delete existing JAR and class files
-echo Deleting existing JAR and class files...
-del /q %CLIENT_JAR%
-del /q %SERVER_JAR%
-del /q *.class
-
-rem Check if JDK is installed
 if not defined JAVA_HOME (
     echo JAVA_HOME is not set. Please set JAVA_HOME to your JDK installation path.
     pause
     exit /b 1
 )
 
-rem Ensure javac and jar commands are available
 set PATH=%JAVA_HOME%\bin;%PATH%
 
-rem Compile Java source files with Java 6 compatibility
+mkdir %BUILD_DIR% %DIST_DIR% %LOGS_DIR% 2>nul
+del /q %DIST_DIR%\*.jar %BUILD_DIR%\*.class 2>nul
+
 echo Compiling Java files...
-javac -source 1.6 -target 1.6 %CLIENT_SRC% %SERVER_SRC%
+javac -source %JAVA_VERSION% -target %JAVA_VERSION% -d %BUILD_DIR% TerminalClient.java TerminalServer.java
 if errorlevel 1 (
-    echo Failed to compile Java files
+    echo Compilation failed!
     pause
     exit /b 1
 )
 
-rem Create manifest files
-echo Creating client manifest file...
-(
-    echo Main-Class: TerminalClient
-) > %CLIENT_MANIFEST%
+cd %BUILD_DIR%
 
-echo Creating server manifest file...
-(
-    echo Main-Class: TerminalServer
-) > %SERVER_MANIFEST%
+(echo Manifest-Version: 1.0
+ echo Main-Class: TerminalClient
+) > client_manifest.mf
 
-rem Create JAR files
-echo Creating client JAR file...
-jar cfm %CLIENT_JAR% %CLIENT_MANIFEST% TerminalClient*.class
-if errorlevel 1 (
-    echo Failed to create %CLIENT_JAR%
-    pause
-    exit /b 1
-)
+(echo Manifest-Version: 1.0
+ echo Main-Class: TerminalServer
+) > server_manifest.mf
 
-echo Creating server JAR file...
-jar cfm %SERVER_JAR% %SERVER_MANIFEST% TerminalServer*.class
-if errorlevel 1 (
-    echo Failed to create %SERVER_JAR%
-    pause
-    exit /b 1
-)
+jar cfm ..\%DIST_DIR%\TerminalClient.jar client_manifest.mf *.class
+jar cfm ..\%DIST_DIR%\TerminalServer.jar server_manifest.mf TerminalServer*.class
 
-rem Clean up
-del %CLIENT_MANIFEST%
-del %SERVER_MANIFEST%
+cd ..
+rmdir /s /q %BUILD_DIR%
 
-echo Compilation and packaging complete.
+echo Build completed successfully!
 pause
 endlocal
-exit /b 0
