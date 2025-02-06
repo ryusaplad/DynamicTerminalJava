@@ -16,7 +16,11 @@ import java.util.List;
 import java.util.Properties;
 
 import java.awt.BorderLayout;
+import java.awt.Dimension;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 
+import javax.swing.BorderFactory;
 import javax.swing.JDialog;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -29,6 +33,9 @@ import javax.swing.SwingUtilities;
 import java.util.Date;
 import java.util.Map;
 import java.util.HashMap;
+
+import java.awt.Color;
+import java.awt.Font;
 
 /**
  * Represents the connection state of a host
@@ -255,34 +262,43 @@ public class TerminalClient {
                 createAndShowStatusMessage();
             }
 
-            while (true) {
-                connectToHosts();
+            // Single attempt to connect to all hosts
+            connectToHosts();
 
-                // Check if all hosts are connected in automatic mode
-                boolean allConnected = true;
+            // Execute commands on any successfully connected hosts
+            for (Map.Entry<String, ConnectionManager> entry : connections.entrySet()) {
+                HostConfig hostConfig = null;
                 for (HostConfig config : hostConfigs) {
-                    if (!config.state.equals(ConnectionState.CONNECTED)) {
-                        allConnected = false;
+                    if (config.hostname.equals(entry.getKey())) {
+                        hostConfig = config;
                         break;
                     }
                 }
 
-                if (allConnected) {
-                    // Close all connections
-                    for (ConnectionManager connection : connections.values()) {
-                        connection.close();
+                if (hostConfig != null && !hostConfig.autoCommand.isEmpty()) {
+                    try {
+                        String[] commands = hostConfig.autoCommand.split(";");
+                        for (String command : commands) {
+                            command = command.trim();
+                            if (!command.isEmpty()) {
+                                entry.getValue().sendCommand(command);
+                                if (!isSilent) {
+                                    updateStatusLabel("Sending command to " + hostConfig.hostname + ": " + command);
+                                    Thread.sleep(1500);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        logError("Error executing commands on " + hostConfig.hostname + ": " + e.getMessage());
                     }
-                    connections.clear();
-                    break;
-                }
-
-                try {
-                    Thread.sleep(5000); // Wait before retrying
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
                 }
             }
+
+            // Close all connections
+            for (ConnectionManager connection : connections.values()) {
+                connection.close();
+            }
+            connections.clear();
 
             if (!isSilent) {
                 disposeStatusMessage();
@@ -404,29 +420,31 @@ public class TerminalClient {
     }
 
     private static void createAndShowStatusMessage() {
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                JFrame frame = new JFrame();
-                frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-                statusDialog = new JDialog(frame, "Status", true);
-                statusDialog.setSize(300, 150);
-                statusDialog.setLocationRelativeTo(frame);
-                statusDialog.setLayout(new BorderLayout());
-                statusDialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
-                statusDialog.setUndecorated(true);
+        SwingUtilities.invokeLater(() -> {
+            JFrame frame = new JFrame();
+            statusDialog = new JDialog(frame, "Terminal Client Status", true);
+            statusDialog.setSize(400, 100);
+            statusDialog.setLocationRelativeTo(null);
+            statusDialog.setLayout(new BorderLayout());
+            statusDialog.setUndecorated(true);
 
-                JPanel contentPanel = new JPanel(new BorderLayout());
-                statusLabel = new JLabel("Terminal client is running. Please wait...",
-                        SwingConstants.CENTER);
-                JProgressBar progressBar = new JProgressBar();
-                progressBar.setIndeterminate(true);
+            JPanel panel = new JPanel(new BorderLayout(5, 5));
+            panel.setBackground(new Color(44, 62, 80));
+            panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-                contentPanel.add(statusLabel, BorderLayout.CENTER);
-                contentPanel.add(progressBar, BorderLayout.SOUTH);
+            statusLabel = new JLabel("Initializing...");
+            statusLabel.setForeground(Color.WHITE);
+            statusLabel.setFont(new Font("Arial", Font.BOLD, 12));
 
-                statusDialog.getContentPane().add(contentPanel);
-                statusDialog.setVisible(true);
-            }
+            JProgressBar progressBar = new JProgressBar();
+            progressBar.setIndeterminate(true);
+            progressBar.setStringPainted(false);
+            progressBar.setPreferredSize(new Dimension(progressBar.getPreferredSize().width, 5));
+
+            panel.add(statusLabel, BorderLayout.CENTER);
+            panel.add(progressBar, BorderLayout.SOUTH);
+            statusDialog.add(panel);
+            statusDialog.setVisible(true);
         });
     }
 
@@ -630,76 +648,50 @@ public class TerminalClient {
     }
 
     private static void connectToHosts() {
-        boolean anyHostAvailable = false;
-
         for (HostConfig hostConfig : hostConfigs) {
-            // Skip if max retries reached
-            if (hostConfig.retryCount >= MAX_RETRIES) {
-                logInfo("Skipping " + hostConfig + " - maximum retries reached");
-                continue;
-            }
+            if (hostConfig.retryCount >= MAX_RETRIES) continue;
+            if (!hostConfig.canRetry()) continue;
 
             try {
-                if (!hostConfig.canRetry()) {
-                    continue; // Skip if last attempt was less than 5 seconds ago
-                }
-
-                hostConfig.lastAttempt = System.currentTimeMillis();
-                hostConfig.retryCount++; // Increment retry counter
-                logInfo("Attempting to connect to " + hostConfig + " (Attempt " + hostConfig.retryCount + " of " + MAX_RETRIES + ")");
-
+                updateStatusLabel("[*] Connecting to " + hostConfig.hostname);
                 ConnectionManager connection = new ConnectionManager(hostConfig);
                 connection.connect();
                 connections.put(hostConfig.hostname, connection);
 
-                // Send client name
+                updateStatusLabel("[>] Sending client name: " + hostConfig.clientName);
                 connection.sendCommand(hostConfig.clientName);
-                Thread.sleep(1000);
 
-                if (executionMode.equals(ExecutionMode.AUTOMATIC)) {
-                    // Execute auto commands
-                    if (!hostConfig.autoCommand.isEmpty()) {
-                        String[] commands = hostConfig.autoCommand.split(";");
-                        for (String command : commands) {
-                            command = command.trim();
-                            if (!command.isEmpty()) {
-                                connection.sendCommand(command);
-                                if (!isSilent) {
-                                    updateStatusLabel("Sending command to " + hostConfig.hostname + ": " + command);
-                                }
-                                Thread.sleep(1500);
-                            }
+                if (executionMode.equals(ExecutionMode.AUTOMATIC) && !hostConfig.autoCommand.isEmpty()) {
+                    String[] commands = hostConfig.autoCommand.split(";");
+                    for (String command : commands.length > 3 ?
+                         new String[]{commands[0], "...", commands[commands.length-1]} : commands) {
+
+                        if (!command.trim().isEmpty()) {
+                            updateStatusLabel("[+] " + hostConfig.hostname + ": " +
+                                (command.length() > 40 ? command.substring(0, 37) + "..." : command));
+                            connection.sendCommand(command.trim());
+                            Thread.sleep(500);
                         }
                     }
                 }
 
-                logInfo("Successfully connected to " + hostConfig);
                 hostConfig.state = ConnectionState.CONNECTED;
-                hostConfig.retryCount = 0; // Reset retry counter on successful connection
-                anyHostAvailable = true;
+                hostConfig.retryCount = 0;
 
             } catch (Exception e) {
-                String errorMsg = "Failed to connect to " + hostConfig + ": " + e.getMessage();
-                logError(errorMsg);
-                if (!isSilent) {
-                    updateStatusLabel(errorMsg);
-                }
-
-                // Close connection if it exists
+                logError("[!] " + hostConfig.hostname + ": " + e.getMessage());
                 ConnectionManager connection = connections.remove(hostConfig.hostname);
                 if (connection != null) {
                     connection.close();
                 }
                 hostConfig.state = ConnectionState.FAILED;
+                hostConfig.retryCount++;
             }
         }
 
-        // If no hosts are available and all have reached max retries, exit
-        if (!anyHostAvailable && allHostsMaxedRetries()) {
-            logInfo("All hosts have reached maximum retry attempts. Exiting...");
-            if (!isSilent) {
-                disposeStatusMessage();
-            }
+        if (connections.isEmpty() && allHostsMaxedRetries()) {
+            updateStatusLabel("[X] All connections failed");
+            try { Thread.sleep(1000); } catch (InterruptedException e) {}
             System.exit(1);
         }
     }
