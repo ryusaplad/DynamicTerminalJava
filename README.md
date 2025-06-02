@@ -10,13 +10,40 @@ I built this because in my job I use Linux to run my compiled jar files and I wa
 
 The TerminalClient and TerminalServer are two Java programs that allow you to run your Java program from anywhere in your network. You can use the TerminalClient to send commands to the TerminalServer and the TerminalServer will run your program and send the output back to the TerminalClient.
 
+## Technology Stack
+
+- **Java**: Built with Java 1.8 compatibility for wide platform support
+- **Socket Programming**: Uses Java's socket communication for network connectivity
+- **Swing GUI**: The TerminalClient includes a Swing-based user interface for easy interaction
+- **Multi-threading**: Handles multiple client connections simultaneously
+- **Cross-platform**: Works on both Windows and Linux environments
+- **Configuration Management**: Uses Properties files for easy configuration
+
 ### TerminalClient
 
 The TerminalClient is a Java program that you can run from anywhere in your network. You can use it to send commands to the TerminalServer and the TerminalServer will run your program and send the output back to the TerminalClient.
 
+#### Features:
+- Automatic and manual execution modes
+- Connection state management
+- Configurable host connections
+- Error logging and handling
+
 ### TerminalServer
 
 The TerminalServer is a Java program that you can run on a server. You can use it to run your Java program and send the output back to the TerminalClient.
+
+#### Features:
+- Multi-client support
+- Command history tracking
+- Platform-specific command execution (Windows/Linux)
+- Dynamic configuration reloading
+
+## System Requirements
+
+- JDK 1.8 or higher
+- Network connectivity between client and server machines
+- Windows or Linux operating system
 
 ## How to use it?
 
@@ -51,3 +78,11 @@ You can build the TerminalClient and TerminalServer by running the following com
 ```bash
 ./compile.bat
 ```
+
+This will create the necessary JAR files in the `dist` directory.
+
+## Configuration
+
+Both the client and server use properties files for configuration:
+- `client_config.properties`: Contains client connection settings
+- `server_config.properties`: Contains server port and other settings

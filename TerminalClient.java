@@ -521,7 +521,6 @@ public class TerminalClient {
             }
 
             if (hostConfigs.isEmpty()) {
-                createDefaultConfig();
                 loadConfig(); // Reload with default config
             }
 
