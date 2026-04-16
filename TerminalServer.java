@@ -1,13 +1,42 @@
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import javax.swing.*;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.io.RandomAccessFile;
 
 public class TerminalServer {
     private static final List<ClientInfo> clients = Collections.synchronizedList(new ArrayList<ClientInfo>());
     private static final String CONFIG_FILE = "server_config.properties";
     private static Properties config = new Properties();
+    private static ServerWindow serverWindow;
+    private static final String LOCK_FILE = "server.lock";
+    private static FileLock lock;
+    private static FileChannel lockChannel;
+    private static RandomAccessFile lockFileStream;
 
     public static void main(String[] args) {
+        if (!acquireLock()) {
+            String message = "Another instance of TerminalServer may already be running.";
+            System.err.println(message);
+            JOptionPane.showMessageDialog(null, message, "Error", JOptionPane.ERROR_MESSAGE);
+            System.exit(1);
+        }
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            releaseLock();
+            System.out.println("Server shut down.");
+        }));
+        
+        // Initialize and show the server window
+        SwingUtilities.invokeLater(() -> {
+            serverWindow = new ServerWindow();
+            serverWindow.setVisible(true);
+            log("INFO", "Server starting...");
+        });
+        
         ServerSocket serverSocket = null;
         try {
             while (true) {
@@ -19,13 +48,64 @@ public class TerminalServer {
                         serverSocket.close();
                     }
                     serverSocket = new ServerSocket(port);
-                    System.out.println("Server is listening on port " + port);
+                    log("INFO", "Server is listening on port " + port);
                 }
 
                 Socket socket = serverSocket.accept();
+                log("INFO", "New connection from: " + socket.getInetAddress().getHostAddress());
                 new ServerThread(socket).start();
             }
         } catch (IOException e) {
+            log("ERROR", "Server error: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                try {
+                    serverSocket.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    private static boolean acquireLock() {
+        try {
+            File file = new File(LOCK_FILE);
+            lockFileStream = new RandomAccessFile(file, "rw");
+            lockChannel = lockFileStream.getChannel();
+            lock = lockChannel.tryLock();
+            if (lock == null) {
+                // Lock is held by another process
+                lockChannel.close();
+                lockFileStream.close();
+                return false;
+            }
+            // Lock acquired
+            return true;
+        } catch (OverlappingFileLockException e) {
+            return false;
+        } catch (IOException e) {
+            System.err.println("Could not acquire lock on " + LOCK_FILE + ": " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    private static void releaseLock() {
+        try {
+            if (lock != null) {
+                lock.release();
+            }
+            if (lockChannel != null) {
+                lockChannel.close();
+            }
+            if (lockFileStream != null) {
+                lockFileStream.close();
+            }
+            new File(LOCK_FILE).delete();
+        } catch (IOException e) {
+            System.err.println("Failed to release file lock: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -47,17 +127,24 @@ public class TerminalServer {
                 String clientName = reader.readLine();
                 String clientIp = socket.getInetAddress().getHostAddress();
                 ClientInfo clientInfo = new ClientInfo(clientName, clientIp);
-                synchronized (clients) { clients.add(clientInfo); }
+                synchronized (clients) { 
+                    clients.add(clientInfo);
+                    // Update GUI
+                    if (serverWindow != null) {
+                        serverWindow.updateConnectionCount(clients.size());
+                        serverWindow.addUser(clientName, clientIp);
+                    }
+                }
 
-                System.out.println("Client connected: " + clientName);
+                log("INFO", "Client connected: " + clientName);
 
                 String command;
                 while ((command = reader.readLine()) != null) {
-                    System.out.println("Received from " + clientName + ": " + command);
+                    log("INFO", "Received from " + clientName + ": " + command);
                     clientInfo.addCommand(command);
 
                     if ("exit".equalsIgnoreCase(command.trim())) {
-                        System.out.println("Exit command received from " + clientName);
+                        log("INFO", "Exit command received from " + clientName);
                         writer.println("Goodbye!");
                         break; // Exit loop to stop reading further commands
                     }
@@ -75,14 +162,14 @@ public class TerminalServer {
                     }
                 }
             } catch (IOException e) {
-                System.out.println("Error: " + e.getMessage());
+                log("ERROR", "Error: " + e.getMessage());
             } finally {
                 cleanup();
                 if (reader != null) {
                     try {
                         reader.close();
                     } catch (IOException e) {
-                        System.out.println("Error closing reader: " + e.getMessage());
+                        log("ERROR", "Error closing reader: " + e.getMessage());
                     }
                 }
                 if (writer != null) {
@@ -166,6 +253,12 @@ public class TerminalServer {
                     ClientInfo ci = iterator.next();
                     if (ci.ip.equals(socket.getInetAddress().getHostAddress())) {
                         iterator.remove();
+                        log("INFO", "Client disconnected: " + ci.name);
+                        // Update GUI
+                        if (serverWindow != null) {
+                            serverWindow.updateConnectionCount(clients.size());
+                            serverWindow.removeUser(ci.name, ci.ip);
+                        }
                         break;
                     }
                 }
@@ -173,7 +266,7 @@ public class TerminalServer {
             try {
                 socket.close();
             } catch (IOException e) {
-                e.printStackTrace();
+                log("ERROR", "Error closing socket: " + e.getMessage());
             }
         }
     }
@@ -209,20 +302,20 @@ public class TerminalServer {
             config.clear(); // Clear existing properties
             config.load(in);
         } catch (IOException e) {
-            System.err.println("Error loading config file: " + e.getMessage());
+            log("ERROR", "Error loading config file: " + e.getMessage());
         } finally {
             if (in != null) {
                 try {
                     in.close();
                 } catch (IOException e) {
-                    e.printStackTrace();
+                    log("ERROR", "Error closing config file: " + e.getMessage());
                 }
             }
         }
     }
 
     private static void createDefaultConfig() {
-        config.setProperty("port", "8887");
+        config.setProperty("port", "8080");
         saveConfig();
     }
 
@@ -232,13 +325,13 @@ public class TerminalServer {
             out = new FileOutputStream(CONFIG_FILE);
             config.store(out, "Server Configuration");
         } catch (IOException e) {
-            System.err.println("Error saving config file: " + e.getMessage());
+            log("ERROR", "Error saving config file: " + e.getMessage());
         } finally {
             if (out != null) {
                 try {
                     out.close();
                 } catch (IOException e) {
-                    e.printStackTrace();
+                    log("ERROR", "Error closing config file: " + e.getMessage());
                 }
             }
         }
@@ -250,5 +343,13 @@ public class TerminalServer {
 
     private static int getConfigInt(String key, int defaultValue) {
         return Integer.parseInt(config.getProperty(key, String.valueOf(defaultValue)));
+    }
+
+    // Add this helper method for logging
+    private static void log(String level, String message) {
+        System.out.println(message);
+        if (serverWindow != null) {
+            serverWindow.log(level, message);
+        }
     }
 }

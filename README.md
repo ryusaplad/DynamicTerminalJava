@@ -1,6 +1,6 @@
 # TerminalClient and TerminalServer
 
-A fun and easy way to run your Java program from anywhere in your network!
+A fun and easy way to run your commands remotely from anywhere in your network!
 
 ## Why I built this?
 
@@ -8,7 +8,7 @@ I built this because in my job I use Linux to run my compiled jar files and I wa
 
 ## What is it?
 
-The TerminalClient and TerminalServer are two Java programs that allow you to run your Java program from anywhere in your network. You can use the TerminalClient to send commands to the TerminalServer and the TerminalServer will run your program and send the output back to the TerminalClient.
+The TerminalClient and TerminalServer are two Java programs that allow you to run any command line program remotely from anywhere in your network. You can use the TerminalClient to send commands to the TerminalServer and the TerminalServer will execute those commands and send the output back to the TerminalClient.
 
 ## Technology Stack
 
@@ -21,7 +21,7 @@ The TerminalClient and TerminalServer are two Java programs that allow you to ru
 
 ### TerminalClient
 
-The TerminalClient is a Java program that you can run from anywhere in your network. You can use it to send commands to the TerminalServer and the TerminalServer will run your program and send the output back to the TerminalClient.
+The TerminalClient is a Java program that you can run from anywhere in your network. You can use it to send commands to the TerminalServer and the TerminalServer will run your commands and send the output back to the TerminalClient.
 
 #### Features:
 - Automatic and manual execution modes
@@ -31,13 +31,15 @@ The TerminalClient is a Java program that you can run from anywhere in your netw
 
 ### TerminalServer
 
-The TerminalServer is a Java program that you can run on a server. You can use it to run your Java program and send the output back to the TerminalClient.
+The TerminalServer is a Java program that you can run on a server. You can use it to run any command line program and send the output back to the TerminalClient.
 
 #### Features:
 - Multi-client support
 - Command history tracking
 - Platform-specific command execution (Windows/Linux)
 - Dynamic configuration reloading
+- Execute any command line program (not just Java applications)
+- Run shell scripts and batch files
 
 ## System Requirements
 
@@ -52,11 +54,19 @@ Here are the steps to use the TerminalClient and TerminalServer:
 1. Run the TerminalServer on a server.
 2. Run the TerminalClient on your computer.
 3. Type in the command you want to run and press enter.
-4. The TerminalServer will run your program and send the output back to the TerminalClient.
+4. The TerminalServer will run your command and send the output back to the TerminalClient.
 
 ### Example
 
 Let's say you want to run the command "java -jar myprogram.jar" on the server. You can type in the command in the TerminalClient and press enter. The TerminalServer will run the program and send the output back to the TerminalClient.
+
+You can run any command that is available on the server, such as:
+- `ls -la` to list files on a Linux server
+- `dir` to list files on a Windows server
+- `python script.py` to run a Python script
+- `npm start` to start a Node.js application
+- `./script.sh` to run a shell script
+- `batch_file.bat` to run a batch file
 
 ## Features
 
@@ -66,6 +76,7 @@ Here are some of the features of the TerminalClient and TerminalServer:
 * Can be used from anywhere in your network
 * Can run multiple programs at the same time
 * Can send commands to the TerminalServer and the TerminalServer will run your program and send the output back to the TerminalClient
+* Cross-platform support for both Windows and Linux commands
 
 ## How to get it?
 

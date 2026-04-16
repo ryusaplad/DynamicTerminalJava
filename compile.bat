@@ -18,7 +18,7 @@ mkdir %BUILD_DIR% %DIST_DIR% %LOGS_DIR% 2>nul
 del /q %DIST_DIR%\*.jar %BUILD_DIR%\*.class 2>nul
 
 echo Compiling Java files...
-javac -source %JAVA_VERSION% -target %JAVA_VERSION% -d %BUILD_DIR% TerminalClient.java TerminalServer.java
+javac -source %JAVA_VERSION% -target %JAVA_VERSION% -d %BUILD_DIR% ServerWindow.java TerminalClient.java TerminalServer.java
 if errorlevel 1 (
     echo Compilation failed!
     pause
@@ -36,7 +36,7 @@ cd %BUILD_DIR%
 ) > server_manifest.mf
 
 jar cfm ..\%DIST_DIR%\TerminalClient.jar client_manifest.mf *.class
-jar cfm ..\%DIST_DIR%\TerminalServer.jar server_manifest.mf TerminalServer*.class
+jar cfm ..\%DIST_DIR%\TerminalServer.jar server_manifest.mf *.class
 
 cd ..
 rmdir /s /q %BUILD_DIR%

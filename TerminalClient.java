@@ -277,16 +277,24 @@ public class TerminalClient {
 
                 if (hostConfig != null && !hostConfig.autoCommand.isEmpty()) {
                     try {
-                        String[] commands = hostConfig.autoCommand.split(";");
-                        for (String command : commands) {
-                            command = command.trim();
-                            if (!command.isEmpty()) {
-                                entry.getValue().sendCommand(command);
-                                if (!isSilent) {
-                                    updateStatusLabel("Sending command to " + hostConfig.hostname + ": " + command);
-                                    Thread.sleep(1500);
+                        // If the command contains multiple parts, add delays
+                        if (hostConfig.autoCommand.contains(";")) {
+                            String[] parts = hostConfig.autoCommand.split(";");
+                            StringBuilder commandWithDelays = new StringBuilder();
+                            for (int i = 0; i < parts.length; i++) {
+                                commandWithDelays.append(parts[i].trim());
+                                if (i < parts.length - 1) {
+                                    commandWithDelays.append("; sleep 2; ");
                                 }
                             }
+                            entry.getValue().sendCommand(commandWithDelays.toString());
+                        } else {
+                            entry.getValue().sendCommand(hostConfig.autoCommand);
+                        }
+                        
+                        if (!isSilent) {
+                            updateStatusLabel("Sending command to " + hostConfig.hostname);
+                            Thread.sleep(1500);
                         }
                     } catch (Exception e) {
                         logError("Error executing commands on " + hostConfig.hostname + ": " + e.getMessage());
@@ -547,13 +555,13 @@ public class TerminalClient {
         config.setProperty("host.1.ip", "192.168.0.103");
         config.setProperty("host.1.port", "8887");
         config.setProperty("host.1.clientName", "Ryu 103");
-        config.setProperty("host.1.autoCommand", "ps aux | grep '[j]ava' | grep -v 'TerminalServer.jar' | awk '{print $2}' | xargs -r kill; /home/user1/PsJPOS_TouchScreen/bin/linux/PsJPOS.sh; exit");
+        config.setProperty("host.1.autoCommand", "ps aux | grep '[j]ava' | grep -v 'TerminalServer.jar' | awk '{print $2}' | xargs -r kill; sleep 2; nohup /home/user1/AiJPOS_TouchScreen/bin/linux/AiJPOS.sh > /dev/null 2>&1 & sleep 2; exit");
 
         // Second host
         config.setProperty("host.2.ip", "192.168.0.105");
         config.setProperty("host.2.port", "8887");
         config.setProperty("host.2.clientName", "Ryu 105");
-        config.setProperty("host.2.autoCommand", "ps aux | grep '[j]ava' | grep -v 'TerminalServer.jar' | awk '{print $2}' | xargs -r kill; /home/user1/PsJPOS_TouchScreen_Ryu/bin/linux/PsJPOS.sh; exit");
+        config.setProperty("host.2.autoCommand", "ps aux | grep '[j]ava' | grep -v 'TerminalServer.jar' | awk '{print $2}' | xargs -r kill; /home/user1/AiJPOS_TouchScreen_Other/bin/linux/PsJPOS.sh; exit");
 
         // Global settings
         config.setProperty("silentMode", "false");
@@ -659,20 +667,6 @@ public class TerminalClient {
 
                 updateStatusLabel("[>] Sending client name: " + hostConfig.clientName);
                 connection.sendCommand(hostConfig.clientName);
-
-                if (executionMode.equals(ExecutionMode.AUTOMATIC) && !hostConfig.autoCommand.isEmpty()) {
-                    String[] commands = hostConfig.autoCommand.split(";");
-                    for (String command : commands.length > 3 ?
-                         new String[]{commands[0], "...", commands[commands.length-1]} : commands) {
-
-                        if (!command.trim().isEmpty()) {
-                            updateStatusLabel("[+] " + hostConfig.hostname + ": " +
-                                (command.length() > 40 ? command.substring(0, 37) + "..." : command));
-                            connection.sendCommand(command.trim());
-                            Thread.sleep(500);
-                        }
-                    }
-                }
 
                 hostConfig.state = ConnectionState.CONNECTED;
                 hostConfig.retryCount = 0;
